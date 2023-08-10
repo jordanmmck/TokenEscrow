@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: UNLICENSED
-pragma solidity ^0.8.13;
+pragma solidity 0.8.18;
 
 import {IERC20} from "@openzeppelin/contracts/interfaces/IERC20.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
-contract Escrow {
+contract Escrow is ReentrancyGuard {
     struct Deposit {
         uint256 amount;
         uint256 block;
@@ -12,13 +13,12 @@ contract Escrow {
     // tokenAddress => depositer => recipient => (amount, timestamp)
     mapping(address => mapping(address => mapping(address => Deposit))) public deposits;
 
-    function depositTokens(address tokenAddress, address recipient, uint256 amount) external {
+    function depositTokens(address tokenAddress, address recipient, uint256 amount) external nonReentrant {
         // is this check too gas intensive to be worth while?
         uint256 allowance = IERC20(tokenAddress).allowance(msg.sender, address(this));
         require(allowance >= amount, "Insufficient allowance");
 
         // transfer tokens to this contract
-        IERC20(tokenAddress).transferFrom(msg.sender, address(this), amount);
         Deposit memory d = deposits[tokenAddress][msg.sender][recipient];
 
         if (d.block == 0) {
@@ -29,15 +29,14 @@ contract Escrow {
             deposits[tokenAddress][msg.sender][recipient].amount += amount;
             deposits[tokenAddress][msg.sender][recipient].block = block.number;
         }
+        require(IERC20(tokenAddress).transferFrom(msg.sender, address(this), amount), "Transfer failed");
     }
 
-    function withdrawTokens(address tokenAddress, address depositer, uint256 amount) external {
+    function withdrawTokens(address tokenAddress, address depositer, uint256 amount) external nonReentrant {
         Deposit memory d = deposits[tokenAddress][depositer][msg.sender];
 
         require(block.number - d.block >= 21600, "Must wait 3 days");
         require(amount <= d.amount, "Insufficient funds");
-        // worth the gas to check this? or simply attempt to transfer?
-        require(IERC20(tokenAddress).balanceOf(address(this)) >= amount, "Insufficient balance");
         // adjust deposit to reflect funds taken out
         deposits[tokenAddress][depositer][msg.sender].amount -= amount;
 
@@ -45,9 +44,6 @@ contract Escrow {
             // if no funds left then remove deposit
             delete deposits[tokenAddress][depositer][msg.sender];
         }
-
-        // call the token contract and transfer tokens to the withdrawer
-        // calling this last to prevent re-entrancy
-        IERC20(tokenAddress).transfer(msg.sender, amount);
+        require(IERC20(tokenAddress).transfer(msg.sender, amount), "Transfer failed");
     }
 }
